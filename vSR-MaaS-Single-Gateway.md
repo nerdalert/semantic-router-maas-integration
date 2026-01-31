@@ -87,18 +87,7 @@ MaaS Gateway (single entry point)
     - No separate vSR auth/rate-limit policies in vSR namespaces.
 6. Validate traffic flow with normal MaaS tests plus `/auto` requests.
 
-## Resume Checklist (New Cluster)
-
-1. Deploy MaaS and a sample LLMInferenceService (`facebook-opt-125m-simulated`).
-2. Deploy vSR using the simulator: `./deploy/openshift/deploy-to-openshift.sh --simulator --no-observability`.
-3. Rebuild and deploy the updated extproc image:
-    - Use OpenShift BuildConfig `semantic-router-extproc` (binary build) from the repo.
-    - Update the `semantic-router` deployment image to the new digest.
-4. Apply single-gateway integration:
-    - `./semantic-router/deploy/openshift/maas-integration/apply-maas-integration.sh`
-5. Validate `/auto` and MaaS baseline endpoints.
-
-## Validation Steps (Once Implemented)
+## Validation Steps
 
 ```bash
 CLUSTER_DOMAIN=$(kubectl get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
@@ -115,7 +104,7 @@ curl -sSk -X POST "https://${MAAS_HOST}/auto/v1/chat/completions" \
 # Expect response model to be the routed backend
 ```
 
-## Known Risks / Open Questions
+##  Open Questions
 
 - Filter ordering: EnvoyFilter must ensure ext_proc runs before ext_authz on the MaaS gateway.
 - Security: ExtProc will see unauthenticated requests unless a lightweight token presence check is added before it.
