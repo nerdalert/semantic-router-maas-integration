@@ -163,7 +163,7 @@ oc get tokenratelimitpolicy -n openshift-ingress gateway-token-rate-limits -o js
 
 Single gateway is only viable if vSR can rewrite the request to MaaS model URL format before Authorino runs SAR. The core work is filter ordering plus a real path rewrite in the ExtProc service. Everything else should reuse MaaS policies and routes unchanged.
 
-## Implementation Notes (Merged From Claude)
+## Implementation Notes
 
 ### ExtProc Behavior
 
