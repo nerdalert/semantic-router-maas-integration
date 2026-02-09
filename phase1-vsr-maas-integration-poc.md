@@ -15,13 +15,13 @@ The dual-gateway approach places MaaS and vSR as separate entry points, each own
 | Gateway | Path | Responsibility |
 |---------|------|----------------|
 | MaaS Gateway | `/maas-api/*`, `/<model>/*` | Token minting, per-model RBAC, rate limiting |
-| vSR (via MaaS) | `/vsr/*` | Semantic routing, model selection |
+| vSR (via MaaS) | `/v1/chat/*` | Semantic routing, model selection |
 
 ### Advantages
 
 1. **No ExtProc changes required** - vSR runs as a standalone service behind MaaS, not as an ExtProc filter in the MaaS gateway. This avoids complex filter ordering and keeps vSR deployment independent.
 
-2. **Faster time to validation** - MaaS policies (auth, rate limits) apply at the gateway level. The `/vsr/*` HTTPRoute simply forwards authenticated traffic to vSR.
+2. **Faster time to validation** - MaaS policies (auth, rate limits) apply at the gateway level. The `/v1/chat/*` HTTPRoute simply forwards authenticated traffic to vSR.
 
 3. **Clean separation of concerns** - MaaS handles identity, tiers, and limits. vSR handles intelligent routing. Neither needs to know the other's internals.
 
@@ -29,9 +29,9 @@ The dual-gateway approach places MaaS and vSR as separate entry points, each own
 
 ### Tradeoffs
 
-- **Auth is at ingress only** - MaaS authenticates at `/vsr/*` ingress. vSR routes directly to model pods, bypassing MaaS per-model RBAC on the inference path.
-- **Token rate limits require policy alignment** - TokenRateLimitPolicy predicates must match the auth identity structure for `/vsr/*` routes.
-- **Duplicate policy management** - If you need identical limits on `/vsr/*` and `/<model>/*`, policies must be defined for both paths.
+- **Auth is at ingress only** - MaaS authenticates at `/v1/chat/*` ingress. vSR routes directly to model pods, bypassing MaaS per-model RBAC on the inference path.
+- **Token rate limits require policy alignment** - TokenRateLimitPolicy predicates must match the auth identity structure for `/v1/chat/*` routes.
+- **Duplicate policy management** - If you need identical limits on `/v1/chat/*` and `/<model>/*`, policies must be defined for both paths.
 
 ### When to Use Dual-Gateway
 
@@ -58,7 +58,7 @@ The dual-gateway approach places MaaS and vSR as separate entry points, each own
                     +---------------------+---------------------+
                     |                                           |
                     v                                           v
-          /maas-api/*, /<model>/*                         /vsr/*
+          /maas-api/*, /<model>/*                      /v1/chat/*
                     |                                           |
                     v                                           v
           +------------------+                      +-----------+-----------+
@@ -85,8 +85,8 @@ The dual-gateway approach places MaaS and vSR as separate entry points, each own
 ## Traffic Flow
 
 1. **Client requests token** from MaaS API (`POST /maas-api/v1/tokens`)
-2. **Client sends inference request** to `POST /vsr/v1/chat/completions` with bearer token
-3. **MaaS Gateway** receives request at `/vsr/*` path
+2. **Client sends inference request** to `POST /v1/chat/completions` with bearer token
+3. **MaaS Gateway** receives request at `/v1/chat/*` path
 4. **HTTPRoute** forwards to vSR service in `vllm-semantic-router-system` namespace
 5. **AuthPolicy** validates token via Kubernetes TokenReview
 6. **vSR classifies request** and selects Model-A or Model-B
@@ -157,8 +157,8 @@ cd ../../..
 
 This creates:
 - **ReferenceGrant** - Allows MaaS gateway to reference vSR service
-- **HTTPRoute** - Routes `/vsr/*` from MaaS gateway to vSR service
-- **AuthPolicy** - Requires valid MaaS token for `/vsr/*` requests
+- **HTTPRoute** - Routes `/v1/chat/*` from MaaS gateway to vSR service
+- **AuthPolicy** - Requires valid MaaS token for `/v1/chat/*` requests
 
 ---
 
@@ -177,7 +177,7 @@ export ACCESS_TOKEN=$(curl -sSk --oauth2-bearer "$(oc whoami -t)" \
 ### Test with Authentication (expect 200)
 
 ```bash
-curl -sSk -X POST "https://${MAAS_HOST}/vsr/v1/chat/completions" \
+curl -sSk -X POST "https://${MAAS_HOST}/v1/chat/completions" \
   -H "Authorization: Bearer ${ACCESS_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"model":"auto","messages":[{"role":"user","content":"Hello"}]}' | jq .
@@ -189,7 +189,7 @@ Expected: JSON response with `"model": "Model-A"` or `"Model-B"`
 
 ```bash
 curl -sSk -w "\nHTTP Status: %{http_code}\n" \
-  -X POST "https://${MAAS_HOST}/vsr/v1/chat/completions" \
+  -X POST "https://${MAAS_HOST}/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{"model":"auto","messages":[{"role":"user","content":"test"}]}'
 ```
@@ -225,11 +225,11 @@ All integration is done via deployment manifests:
 
 **No changes required for basic auth.**
 
-For token rate limiting to work on `/vsr/*`, the TokenRateLimitPolicy predicates need to match the auth identity structure. Current issue: the `tier` claim is not extracted for `/vsr/*` requests.
+For token rate limiting to work on `/v1/chat/*`, the TokenRateLimitPolicy predicates need to match the auth identity structure. Current issue: the `tier` claim is not extracted for `/v1/chat/*` requests.
 
 **Potential fix** (not implemented in Phase 1):
 - Update `vsr-interim-auth-policy` to extract tier metadata from namespace name
-- Or create a `/vsr/*`-specific TokenRateLimitPolicy with different predicates
+- Or create a `/v1/chat/*`-specific TokenRateLimitPolicy with different predicates
 
 ---
 
@@ -253,13 +253,8 @@ spec:
     - matches:
         - path:
             type: PathPrefix
-            value: /vsr
+            value: /v1/chat
       filters:
-        - type: URLRewrite
-          urlRewrite:
-            path:
-              type: ReplacePrefixMatch
-              replacePrefixMatch: /
         - type: RequestHeaderModifier
           requestHeaderModifier:
             remove:
@@ -289,6 +284,27 @@ spec:
         kubernetesTokenReview:
           audiences:
             - maas-default-gateway-sa
+        defaults:
+          userid:
+            expression: |
+              auth.identity.user.username.split(":")[3]
+          tier:
+            expression: |
+              auth.identity.user.username.split(":")[2].replace("maas-default-gateway-tier-", "")
+        cache:
+          key:
+            selector: context.request.http.headers.authorization.@case:lower
+          ttl: 600
+    response:
+      success:
+        filters:
+          identity:
+            json:
+              properties:
+                userid:
+                  expression: auth.identity.userid
+                tier:
+                  expression: auth.identity.tier
 ```
 
 ### ReferenceGrant (`vsr-reference-grant.yaml`)
@@ -314,20 +330,19 @@ spec:
 
 ## Known Limitations
 
-1. **Token rate limiting not enforced** - TokenRateLimitPolicy predicates check `auth.identity.tier` but this field is not populated for `/vsr/*` requests.
+1. **No per-model RBAC on inference path** - vSR routes directly to model pods, bypassing MaaS SubjectAccessReview. The `/v1/chat/*` path doesn't map to a `/<namespace>/<model>` pattern, so path-based SAR doesn't apply.
 
-2. **No per-model RBAC on inference path** - vSR routes directly to model pods, bypassing MaaS SubjectAccessReview.
+2. **No billing integration** - `X-MaaS-Model-Executed` header not set for cost attribution.
 
-3. **No billing integration** - `X-MaaS-Model-Executed` header not set for cost attribution.
+3. **Tier extraction assumes namespace naming convention** - The AuthPolicy derives tier from the SA namespace (`maas-default-gateway-tier-<tier>`). If the MaaS tenant name changes, the extraction expression must be updated.
 
 ---
 
 ## Next Steps (Phase 2+)
 
-1. **Add tier extraction to vsr-interim-auth-policy** for rate limit enforcement
-2. **Single-gateway architecture** - vSR as ExtProc in MaaS gateway for full policy integration
-3. **Model registry sync** - vSR discovers models from MaaS LLMInferenceService list
-4. **Billing headers** - Set `X-MaaS-Model-Executed` for usage tracking
+1. **Single-gateway architecture** - vSR as ExtProc in MaaS gateway for full policy integration
+2. **Model registry sync** - vSR discovers models from MaaS LLMInferenceService list
+3. **Billing headers** - Set `X-MaaS-Model-Executed` for usage tracking
 
 ---
 
@@ -344,4 +359,4 @@ spec:
 |------|---------|
 | `/maas-api/*` | MaaS API |
 | `/<model>/v1/*` | MaaS -> KServe model |
-| `/vsr/v1/*` | MaaS -> vSR -> Model |
+| `/v1/chat/*` | MaaS -> vSR -> Model |

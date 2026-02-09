@@ -1,0 +1,22 @@
+# ReferenceGrant allowing MaaS gateway to route to semantic-router service
+# This enables cross-namespace routing from openshift-ingress to the vSR namespace
+#
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-maas-gateway-to-vsr
+  labels:
+    app: semantic-router
+    integration: maas
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: openshift-ingress
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: ${VSR_NAMESPACE}
+  to:
+    - group: ""
+      kind: Service
+      name: semantic-router-kserve

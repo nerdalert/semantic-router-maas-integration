@@ -1,0 +1,50 @@
+# AuthPolicy for validating MaaS tokens on the /v1/chat/* route
+# This ensures that requests to the semantic router are authenticated
+# using the same token mechanism as direct MaaS model access.
+#
+# Identity enrichment:
+#   - userid: extracted from SA name (4th segment of SA username)
+#   - tier: extracted from SA namespace (e.g., maas-default-gateway-tier-free -> free)
+#
+# These fields feed the gateway TokenRateLimitPolicy so that token budgets
+# are shared across /v1/chat/* and /<model>/v1/* paths.
+#
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata:
+  name: vsr-interim-auth-policy
+  labels:
+    app: semantic-router
+    integration: maas
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: vsr-interim-route
+  rules:
+    authentication:
+      service-accounts:
+        kubernetesTokenReview:
+          audiences:
+            - maas-default-gateway-sa
+        defaults:
+          userid:
+            expression: |
+              auth.identity.user.username.split(":")[3]
+          tier:
+            expression: |
+              auth.identity.user.username.split(":")[2].replace("maas-default-gateway-tier-", "")
+        cache:
+          key:
+            selector: context.request.http.headers.authorization.@case:lower
+          ttl: 600
+    response:
+      success:
+        filters:
+          identity:
+            json:
+              properties:
+                userid:
+                  expression: auth.identity.userid
+                tier:
+                  expression: auth.identity.tier
